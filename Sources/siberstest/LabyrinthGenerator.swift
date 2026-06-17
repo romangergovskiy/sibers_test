@@ -8,13 +8,15 @@ struct LabyrinthGenerator<RandomSource: RandomNumberGenerator> {
     }
 
     mutating func makeWorld(roomCount: Int) -> World {
-        let dimensions = Self.factorizedDimensions(for: roomCount)
+        let dimensions = Self.layoutDimensions(for: roomCount)
         let width = dimensions.width
         let height = dimensions.height
 
         var rooms: [Position: Room] = [:]
+        var createdRooms = 0
         for y in 0..<height {
             for x in 0..<width {
+                guard createdRooms < roomCount else { continue }
                 rooms[Position(x: x, y: y)] = Room(
                     doors: [],
                     items: [],
@@ -22,12 +24,14 @@ struct LabyrinthGenerator<RandomSource: RandomNumberGenerator> {
                     isPermanentlyLit: false,
                     monster: nil
                 )
+                createdRooms += 1
             }
         }
 
-        let start = Position(x: Int.random(in: 0..<width, using: &randomSource), y: Int.random(in: 0..<height, using: &randomSource))
+        let start = rooms.keys.randomElement(using: &randomSource) ?? Position(x: 0, y: 0)
         generateConnectedMaze(in: &rooms, width: width, height: height)
         addExtraDoors(in: &rooms, width: width, height: height)
+        ensureBranchingLayout(in: &rooms, width: width, height: height)
 
         var allPositions = Array(rooms.keys)
         allPositions.shuffle(using: &randomSource)
@@ -71,13 +75,13 @@ struct LabyrinthGenerator<RandomSource: RandomNumberGenerator> {
 
     // MARK: Private methods
 
-    private static func factorizedDimensions(for roomCount: Int) -> (width: Int, height: Int) {
-        var width = Int(Double(roomCount).squareRoot())
-        width = max(width, 1)
-        while roomCount % width != 0 {
-            width -= 1
+    private static func layoutDimensions(for roomCount: Int) -> (width: Int, height: Int) {
+        if roomCount <= 4 {
+            return (2, max(1, roomCount / 2 + roomCount % 2))
         }
-        return (width, roomCount / width)
+        let width = max(2, Int(ceil(Double(roomCount).squareRoot())))
+        let height = max(2, Int(ceil(Double(roomCount) / Double(width))))
+        return (width, height)
     }
 
     private mutating func generateConnectedMaze(in rooms: inout [Position: Room], width: Int, height: Int) {
@@ -90,7 +94,10 @@ struct LabyrinthGenerator<RandomSource: RandomNumberGenerator> {
             let candidates = Direction.allCases
                 .map { ($0, current.moved($0)) }
                 .filter { direction, next in
-                    (0..<width).contains(next.x) && (0..<height).contains(next.y) && !visited.contains(next)
+                    (0..<width).contains(next.x) &&
+                        (0..<height).contains(next.y) &&
+                        !visited.contains(next) &&
+                        rooms[next] != nil
                 }
 
             if let selected = candidates.randomElement(using: &randomSource) {
@@ -110,13 +117,40 @@ struct LabyrinthGenerator<RandomSource: RandomNumberGenerator> {
         for y in 0..<height {
             for x in 0..<width {
                 let position = Position(x: x, y: y)
+                guard rooms[position] != nil else { continue }
                 for direction in Direction.allCases {
                     guard Double.random(in: 0...1, using: &randomSource) < 0.2 else { continue }
                     let next = position.moved(direction)
-                    guard (0..<width).contains(next.x), (0..<height).contains(next.y) else { continue }
+                    guard (0..<width).contains(next.x), (0..<height).contains(next.y), rooms[next] != nil else { continue }
                     rooms[position]?.doors.insert(direction)
                     rooms[next]?.doors.insert(direction.opposite)
                 }
+            }
+        }
+    }
+
+    private mutating func ensureBranchingLayout(in rooms: inout [Position: Room], width: Int, height: Int) {
+        guard rooms.count >= 5 else { return }
+        let hasBranch = rooms.values.contains(where: { $0.doors.count >= 3 })
+        if hasBranch { return }
+
+        let candidates = rooms.keys.shuffled(using: &randomSource)
+        for position in candidates {
+            let possibleNewNeighbors = Direction.allCases.filter { direction in
+                let next = position.moved(direction)
+                return (0..<width).contains(next.x) &&
+                    (0..<height).contains(next.y) &&
+                    rooms[next] != nil &&
+                    !(rooms[position]?.doors.contains(direction) ?? false)
+            }
+
+            guard let chosenDirection = possibleNewNeighbors.randomElement(using: &randomSource) else { continue }
+            let next = position.moved(chosenDirection)
+            rooms[position]?.doors.insert(chosenDirection)
+            rooms[next]?.doors.insert(chosenDirection.opposite)
+
+            if rooms[position]?.doors.count ?? 0 >= 3 || rooms[next]?.doors.count ?? 0 >= 3 {
+                return
             }
         }
     }
